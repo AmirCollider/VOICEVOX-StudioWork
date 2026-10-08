@@ -121,6 +121,16 @@ def moras_of(kana):
     return out
 
 
+def voiceable(moras):
+    """A word with no vowel ('ンー' -> 'ン','ン') comes out of VOICEVOX as a
+    hum about 40 dB below speech: silence, and the line jumps straight to
+    the next word. Say it the way a Japanese hum is said: 'ンー' -> 'ウーン'."""
+    if moras and all(m in ('ン', 'ッ') for m in moras):
+        n = moras.count('ン')
+        return ['ウ'] * n + ['ン'] if n else []
+    return moras
+
+
 def vowel(m):
     return VOWEL_OF.get(m[-1])
 
@@ -284,6 +294,7 @@ def sentence_words(body, kana):
             moras = moras_of(''.join(kana.word(x) for x in w2.split('-') if x))
         else:
             moras = moras_of(kana.word(w2))
+        moras = voiceable(moras)
         if not moras:
             continue
         if stutter:
