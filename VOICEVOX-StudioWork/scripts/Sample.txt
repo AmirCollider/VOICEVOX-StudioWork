@@ -1,0 +1,10 @@
+gap = 0.4
+ME [excited]: Yahho~! Look at this! It's VoxTalk!
+ME [happy]: You just write plain English, and Zundamon reads it *sooo* clearly!
+ME [cute]: No weird robotic accents, and no sleepy sighs at the end~ Hehe ♡
+ME [cheeky]: It turns everything into magic Katakana all by itself!
+(pause 0.4)
+ME [flustered]: W-Wait! Don't forget the super important rule!
+ME [pleading]: In your description, pleeease write: VOICEVOX:ずんだもん!
+ME [shy]: It's Zundamon's credit rule, okay? Promise me! ♡
+ME [smug]: Now drag your file and let's make something amazing!
