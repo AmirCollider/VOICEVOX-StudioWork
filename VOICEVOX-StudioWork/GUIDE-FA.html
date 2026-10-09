@@ -46,7 +46,12 @@ th,td{border:1px solid var(--line);padding:6px 10px;text-align:right;vertical-al
 <li><b>یه اسکریپت کامل:</b> فایل <code>.txt</code> رو بکش روی <code>render_script.bat</code>. خروجی‌ها می‌رن توی <code>renders/اسم-فایل/</code>.</li>
 <li><b>یه جمله:</b> روی <code>say.bat</code> دوبار کلیک کن، جمله رو تایپ کن. اول کاتاکاناش رو نشون می‌ده، بعد صدا رو توی <code>renders/say.wav</code> می‌سازه.</li>
 </ul>
-<p>توی هر پوشه‌ی خروجی هر خط جداست (<code>01_ME.wav</code>، …)، به‌علاوه‌ی <code>full.wav</code> (همه با هم)، <code>captions.srt</code> (زیرنویس با زمان دقیق) و <code>timing.txt</code>. همون چیزهایی که برای Claude Design لازمه.</p>
+<p>توی هر پوشه‌ی خروجی هر خط جداست (<code>01_ME.wav</code>، …)، به‌علاوه‌ی <code>full.wav</code> (همه با هم)، <code>captions.srt</code> (زیرنویس هر خط)، <code>timing.txt</code>، و این دو تا:</p>
+<ul>
+<li><code>sentences.srt</code>: زیرنویس <b>هر جمله</b> با زمان دقیقش.</li>
+<li><code>timing.json</code>: شروع و پایان <b>هر خط، هر جمله و هر کلمه</b> توی <code>full.wav</code>، به ثانیه.</li>
+</ul>
+<p><b>برای Claude Design:</b> <code>full.wav</code> و <code>timing.json</code> رو بده و بگو زمان هر زیرنویس و هر کلمه رو دقیقاً از <code>timing.json</code> برداره و خودش حدس نزنه. اگه فقط <code>captions.srt</code> یا <code>timing.txt</code> رو بدی، فقط زمان کل هر خط رو داره و تکه‌های وسط خط رو حدس می‌زنه؛ ویدیو از وسط کار از صدا جلو یا عقب می‌افته.</p>
 <p>دو اسکریپت آماده هم هست: <code>scripts/intro.txt</code> (معرفی خودت) و <code>scripts/voice_test.txt</code> (۱۴ حال‌وهوا).</p>
 
 <h2>۳. نوشتن اسکریپت</h2>
@@ -69,7 +74,10 @@ ME [pleading]: Pleeease? I'm *really* good, I promise!</pre>
 <tr><td><code>—</code></td><td>حرف قطع می‌شه (هول‌شدن)</td></tr>
 <tr><td><code>W-Wait</code></td><td>لکنت</td></tr>
 <tr><td><code>Hehe</code>، <code>Hmph</code>، <code>Uhm</code>، <code>Shh</code></td><td>به شکل ژاپنیِ انیمه‌ای گفته می‌شن: エヘヘ، フン، アーン، シーッ</td></tr>
-<tr><td><code>(pause 1.0)</code></td><td>سکوت، به ثانیه</td></tr>
+<tr><td><code>(pause 1.0)</code> توی یه خط جدا</td><td>سکوت بین دو خط، به ثانیه (به‌علاوه‌ی <code>gap</code>)</td></tr>
+<tr><td><code>One! (pause 0.5) Two!</code></td><td>سکوت بین دو جمله‌ی همون خط، دقیقاً همین‌قدر</td></tr>
+<tr><td><code>gap = 0.4</code> اول فایل</td><td>سکوت بین خط‌ها</td></tr>
+<tr><td><code>sentence_gap = 0.5</code> اول فایل</td><td>سکوت بین جمله‌های <b>همه‌ی</b> خط‌ها (بدون این، از روی علامت آخر جمله: ۰٫۲۵ ثانیه، بعد از <code>?</code> ۰٫۳۲، بعد از <code>...</code> ۰٫۵)</td></tr>
 </table>
 
 <h2>۴. حال‌وهواها</h2>
@@ -105,5 +113,5 @@ ME [pleading]: Pleeease? I'm *really* good, I promise!</pre>
 <tr><td>«VOICEVOX said 400 …»</td><td>یه کلمه به کانایی تبدیل شده که VOICEVOX قبولش نمی‌کنه. متن خطا رو برام بفرست. تا اون موقع می‌تونی کلمه رو توی <code>words.json</code> با کاتاکانای ساده بنویسی.</td></tr>
 <tr><td>«e2k is not installed»</td><td><code>setup.bat</code> رو دوباره اجرا کن.</td></tr>
 </table>
-<p class="mute">این ابزار با تجزیه‌گر کانای خود VOICEVOX و یه موتور شبیه‌سازی‌شده تست شده، نه با صدای واقعی VOICEVOX. اگه اولین اجرا خطا داد، متن خطا رو بفرست.</p>
+<p class="mute">این ابزار با موتور واقعی VOICEVOX (نسخه‌ی 0.25.2) تست شده و تلفظ کلمه‌ها با تشخیص گفتار (Whisper) چک شده. اگه خطایی دیدی، متن خطا رو بفرست.</p>
 </div></body></html>

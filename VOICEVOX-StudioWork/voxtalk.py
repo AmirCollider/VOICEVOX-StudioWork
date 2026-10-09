@@ -28,6 +28,9 @@ Needs: the VOICEVOX app running (it serves http://127.0.0.1:50021), and
 
 Run:
   python voxtalk.py script scripts/intro.txt      -> renders/intro/
+      (each line's wav, full.wav, captions.srt per line, sentences.srt per
+       sentence, timing.txt, and timing.json: every line, sentence and word
+       with its start and end in full.wav - what a video should follow)
   python voxtalk.py say "Hello! I'm AmirCollider!" --mood excited
   python voxtalk.py kana "Hello! I'm AmirCollider!"   (shows the katakana, no engine needed)
   python voxtalk.py voices                         (lists the engine's voices)
@@ -53,6 +56,9 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LN2_12 = math.log(2) / 12.0          # one semitone in VOICEVOX's log-pitch units
+MIN_BG = 0.09                        # seconds: the shortest b or g that is still heard
+FRAME = 256 / 24000                  # the engine times every sound in whole frames of this
+UPSPEAK = 0.15                       # seconds the engine adds to the end of a question
 
 
 # ==================================================================
@@ -229,10 +235,21 @@ class Kana:
             try:
                 k = self.c2k(bare)
                 if k:
-                    return k
+                    return self.plural(bare, k)
             except Exception:
                 pass
         return ''.join(LETTERS.get(c, '') for c in bare)
+
+    def plural(self, bare, k):
+        """e2k sometimes drops a plural s ('supporters' -> サポーター, the same
+        as 'supporter', and the listener hears one supporter). Put it back."""
+        if (len(bare) < 4 or not bare.endswith('s')
+                or re.search(r'(ss|us|is|[sxz]es|[cs]hes|ges|ces)$', bare)
+                or self.c2k(bare[:-1]) != k):
+            return k
+        if bare[-2] == 't' and k.endswith('ト'):
+            return k[:-1] + 'ツ'
+        return k + ('ス' if bare[-2] in 'pkf' else 'ズ')
 
 
 # ==================================================================
@@ -240,27 +257,36 @@ class Kana:
 # ==================================================================
 SENT = re.compile(r'(\.{3,}|…|—|[.!?~♡❤]+)')
 WORD = re.compile(r"\*?[A-Za-z0-9][A-Za-z0-9'’\-]*\*?|[ァ-ヴーぁ-ゖ]+|,|;|:")
+PAUSE = re.compile(r'\(\s*pause\s+(\d+(?:\.\d*)?|\.\d+)\s*s?\s*\)', re.I)
 
 
-def split_line(text, moods):
+def split_line(text, moods, sentence_gap=None):
     """Sentences with their moods and delivery markers. A [mood] inside the
-    text switches the mood from that point on."""
+    text switches the mood from that point on. The silence after a sentence
+    follows its punctuation; sentence_gap sets it for every sentence, and a
+    (pause 0.5) inside the text sets it at that point."""
+    text = PAUSE.sub(lambda m: ' \0%s\0 ' % m.group(1), text)
     text = re.sub(r'\([^)]*\)', ' ', text)
     text = re.sub(r'\b([AaPp])\.\s?[Mm]\.', lambda m: (' エーエム.' if m.group(1) in 'Aa' else ' ピーエム.'), text)  # 3 a.m.
-    segs, current = [], list(moods)
+    segs, current, asked = [], list(moods), {}
     for k, chunk in enumerate(re.split(r'\[([^\]]*)\]', text)):
         if k % 2:
             current = [m.strip().lower() for m in re.split(r'[\s,]+', chunk) if m.strip()]
             continue
-        parts = SENT.split(chunk)
-        for i in range(0, len(parts), 2):
-            body, sep = parts[i], (parts[i + 1] if i + 1 < len(parts) else '')
-            if not re.search(r'[A-Za-z0-9ァ-ヴぁ-ゖ]', body):
-                if segs and sep:
-                    segs[-1]['sep'] += sep
+        for j, piece in enumerate(chunk.split('\0')):
+            if j % 2:                                     # the seconds of a (pause N)
+                if segs:
+                    asked[len(segs) - 1] = float(piece)
                 continue
-            segs.append({'body': body, 'sep': sep, 'moods': list(current)})
-    for s in segs:
+            parts = SENT.split(piece)
+            for i in range(0, len(parts), 2):
+                body, sep = parts[i], (parts[i + 1] if i + 1 < len(parts) else '')
+                if not re.search(r'[A-Za-z0-9ァ-ヴぁ-ゖ]', body):
+                    if segs and sep:
+                        segs[-1]['sep'] += sep
+                    continue
+                segs.append({'body': body, 'sep': sep, 'moods': list(current)})
+    for i, s in enumerate(segs):
         b, sep = s['body'], s['sep']
         s['tilde'] = '~' in b + sep
         s['heart'] = '♡' in b + sep or '❤' in b + sep
@@ -269,7 +295,11 @@ def split_line(text, moods):
         s['trail'] = sep.startswith('...') or sep.startswith('…')
         s['cut'] = sep.startswith('—')
         s['pause'] = 0.5 if s['trail'] else 0.08 if s['cut'] else 0.32 if s['question'] else 0.25
-    if segs:
+        if sentence_gap is not None and not s['cut']:
+            s['pause'] = max(s['pause'], sentence_gap) if s['trail'] else sentence_gap
+        if i in asked:
+            s['pause'] = asked[i]
+    if segs and len(segs) - 1 not in asked:
         segs[-1]['pause'] = 0.0
     return segs
 
@@ -459,7 +489,8 @@ def shape(aps, spans, mood, seg, seed):
         return
     rng = random.Random(seed)
 
-    # 1. Nothing whispered: give every devoiced vowel a voice and a pitch.
+    # 1. Nothing whispered: give every devoiced vowel a voice and a pitch,
+    #    and every b and g enough time to be heard.
     voiced = [m['pitch'] for m in flat if m['pitch'] > 0]
     mean = float(np.mean(voiced)) if voiced else 5.8
     for i, m in enumerate(flat):
@@ -468,6 +499,11 @@ def shape(aps, spans, mood, seg, seed):
         if m['pitch'] <= 0 and m['vowel'] not in ('cl', 'pau', 'sil'):
             nb = [x['pitch'] for x in flat[max(0, i - 1):i + 2] if x['pitch'] > 0]
             m['pitch'] = float(np.mean(nb)) if nb else mean
+        # Inside a phrase the engine makes b and g so short they melt into the
+        # vowels: "the golden" comes out "the olden", "rainbow" "rainmow".
+        # (Not d: held this long, a d is heard as a t - "paddle" -> "battle".)
+        if m.get('consonant') in ('b', 'g') and (m.get('consonant_length') or 0) < MIN_BG:
+            m['consonant_length'] = MIN_BG
 
     # 2. A lively melody: each accent phrase a little higher or lower than
     #    the last, the way people bounce through a sentence.
@@ -539,13 +575,49 @@ def wav_to_array(data):
     return x, sr
 
 
-def trim(x, sr, thresh=0.01, keep=0.03):
+def trim_bounds(x, sr, thresh=0.01, keep=0.03):
     a = np.abs(x)
     on = np.where(a > thresh * max(a.max(), 1e-6))[0]
     if len(on) == 0:
-        return x
+        return 0, len(x)
     k = int(keep * sr)
-    return x[max(0, on[0] - k):min(len(x), on[-1] + k)]
+    return max(0, on[0] - k), min(len(x), on[-1] + k)
+
+
+def trim(x, sr, thresh=0.01, keep=0.03):
+    a, b = trim_bounds(x, sr, thresh, keep)
+    return x[a:b]
+
+
+def mora_times(aps, q):
+    """Where each mora starts and ends in the engine's output, in seconds,
+    and how long the output is. The engine divides every sound by the speed
+    and rounds it to whole frames; a question gets one more sound at its end."""
+    speed = float(q.get('speedScale', 1.0))
+
+    def frames(sec):
+        return int(np.round(sec / speed / FRAME))
+
+    t = frames(q.get('prePhonemeLength', 0.0))
+    out = []
+    for ap in aps:
+        for m in ap['moras']:
+            start = t
+            t += frames(m.get('consonant_length') or 0.0) + frames(m['vowel_length'])
+            out.append([start, t])
+        if ap.get('is_interrogative') and ap['moras']:
+            t += frames(UPSPEAK)
+            out[-1][1] = t
+        if ap.get('pause_mora'):
+            pause = q.get('pauseLength')
+            pause = ap['pause_mora']['vowel_length'] if pause is None else pause
+            t += frames(pause * float(q.get('pauseLengthScale', 1.0)))
+    t += frames(q.get('postPhonemeLength', 0.0))
+    return [(a * FRAME, b * FRAME) for a, b in out], t * FRAME
+
+
+def caption_text(text):
+    return re.sub(r'\s+', ' ', text.replace('*', '')).strip()
 
 
 # ==================================================================
@@ -567,10 +639,10 @@ class VoxTalk:
                 m.update(self.moods[n])
         return m
 
-    def plan(self, text, moods=()):
+    def plan(self, text, moods=(), sentence_gap=None):
         """What will be said: sentences, kana, mood - no engine needed."""
         plan = []
-        for seg in split_line(text, moods or ['normal']):
+        for seg in split_line(text, moods or ['normal'], sentence_gap):
             words = sentence_words(seg['body'], self.kana)
             if not any(isinstance(w, dict) for w in words):
                 continue
@@ -579,10 +651,15 @@ class VoxTalk:
                          'mood': self.mood(seg['moods'])})
         return plan
 
-    def speak(self, text, moods=()):
-        out = []
+    def speak(self, text, moods=(), sentence_gap=None):
+        return self.speak_timed(text, moods, sentence_gap)[:2]
+
+    def speak_timed(self, text, moods=(), sentence_gap=None):
+        """The audio, and when each sentence and word is said in it:
+        [{'text', 'start', 'end', 'words': [{'word', 'start', 'end'}]}]."""
+        out, sentences, n = [], [], 0
         sr = 24000
-        for i, p in enumerate(self.plan(text, moods)):
+        for i, p in enumerate(self.plan(text, moods, sentence_gap)):
             mood = p['mood']
             sid = self.engine.style_id(self.cfg.get('speaker', 'ずんだもん'),
                                        mood.get('style', self.cfg.get('style', 'ノーマル')))
@@ -599,11 +676,32 @@ class VoxTalk:
             q['pauseLengthScale'] = float(mood.get('pauses', 0.8))
             q.pop('kana', None)
             x, sr = wav_to_array(self.engine.synthesis(q, sid))
-            out.append(trim(x, sr))
+            a, b = trim_bounds(x, sr)
+            times, total = mora_times(aps, q)
+            scale = len(x) / sr / total if total else 1.0    # 1.0 unless the engine times differently
+            start, length = n / sr, (b - a) / sr
+
+            def at(sec):
+                return start + min(max(sec * scale - a / sr, 0.0), length)
+
+            words = []
+            for w, j, k in sorted(p['spans'], key=lambda s: s[1]):
+                if words and words[-1].pop('stutter', False):  # "W-" and "Wait" are one word
+                    words[-1]['end'] = at(times[k - 1][1])
+                    continue
+                words.append({'word': w['word'], 'start': at(times[j][0]), 'end': at(times[k - 1][1])})
+                if w.get('stutter'):
+                    words[-1]['stutter'] = True
+            for w in words:
+                w.pop('stutter', None)
+            sentences.append({'text': caption_text(p['seg']['body'] + p['seg']['sep']),
+                              'start': start, 'end': start + length, 'words': words})
+            out.append(x[a:b])
             out.append(np.zeros(int(p['seg']['pause'] * sr), np.float32))
+            n += (b - a) + len(out[-1])
         if not out:
-            return np.zeros(int(0.2 * sr), np.float32), sr
-        return np.concatenate(out), sr
+            return np.zeros(int(0.2 * sr), np.float32), sr, []
+        return np.concatenate(out), sr, sentences
 
 
 def write_wav(path, x, sr):
@@ -621,11 +719,13 @@ def normalize(x, peak=0.89):
 
 
 # Script format (same as KoriVoice):  ME [mood]: text   |  (pause 1.0)  |  gap = 0.6
+#   sentence_gap = 0.5   sets the silence between the sentences of every line
+#   ME: One! (pause 0.5) Two!   sets it at one place in a line
 LINE = re.compile(r'^\s*(?:(?P<who>[A-Za-z_][\w\-]*)\s*)?(?:\[(?P<moods>[^\]]*)\])?\s*:\s*(?P<text>.+)$')
 
 
 def parse_script(text):
-    gap, items = 0.6, []
+    gap, sentence_gap, items = 0.6, None, []
     for raw in text.splitlines():
         s = raw.strip()
         if not s or s.startswith('#'):
@@ -634,9 +734,12 @@ def parse_script(text):
         if m:
             items.append({'pause': float(m.group(1))})
             continue
-        m = re.match(r'^gap\s*=\s*([\d.]+)$', s, re.I)
+        m = re.match(r'^(sentence_gap|gap)\s*=\s*([\d.]+)$', s, re.I)
         if m:
-            gap = float(m.group(1))
+            if m.group(1).lower() == 'gap':
+                gap = float(m.group(2))
+            else:
+                sentence_gap = float(m.group(2))
             continue
         m = LINE.match(s)
         if m and (m.group('who') or m.group('moods')):
@@ -644,7 +747,7 @@ def parse_script(text):
             items.append({'who': (m.group('who') or 'ME').upper(), 'moods': moods, 'text': m.group('text').strip()})
         else:
             items.append({'who': 'ME', 'moods': [], 'text': s})
-    return gap, items
+    return gap, sentence_gap, items
 
 
 def srt_time(t):
@@ -657,25 +760,29 @@ def srt_time(t):
 
 def render_script(vt, path, out_dir):
     with open(path, encoding='utf-8-sig') as f:
-        gap, items = parse_script(f.read())
+        gap, sentence_gap, items = parse_script(f.read())
     os.makedirs(out_dir, exist_ok=True)
     pieces, timing, lines, t, sr, n = [], [], [], 0.0, 24000, 0
     total = sum(1 for it in items if 'text' in it)
     for it in items:
         if 'pause' in it:
             pieces.append(np.zeros(int(it['pause'] * sr), np.float32))
-            t += it['pause']
+            t += len(pieces[-1]) / sr
             continue
         n += 1
         print('[%d/%d] %s: %s' % (n, total, ' '.join(it['moods']) or 'normal', it['text']))
-        x, sr = vt.speak(it['text'], it['moods'])
+        x, sr, sentences = vt.speak_timed(it['text'], it['moods'], sentence_gap)
         name = '%02d_%s.wav' % (n, it['who'])
         lines.append((name, x))
         if pieces:
             pieces.append(np.zeros(int(gap * sr), np.float32))
-            t += gap
-        caption = re.sub(r'\s+', ' ', re.sub(r'\[[^\]]*\]|\([^)]*\)', '', it['text'])).replace('*', '').strip()
-        timing.append((t, t + len(x) / sr, it['who'], caption, name))
+            t += len(pieces[-1]) / sr
+        caption = caption_text(re.sub(r'\[[^\]]*\]|\([^)]*\)', '', it['text']))
+        for s in sentences:                       # line time -> time in full.wav
+            s['start'], s['end'] = t + s['start'], t + s['end']
+            for w in s['words']:
+                w['start'], w['end'] = t + w['start'], t + w['end']
+        timing.append((t, t + len(x) / sr, it['who'], caption, name, sentences))
         pieces.append(x)
         t += len(x) / sr
     full = np.concatenate(pieces + [np.zeros(int(0.3 * sr), np.float32)])
@@ -686,10 +793,24 @@ def render_script(vt, path, out_dir):
     for name, x in lines:
         write_wav(os.path.join(out_dir, name), x * gain, sr)
     with open(os.path.join(out_dir, 'captions.srt'), 'w', encoding='utf-8') as f:
-        for i, (a, b, _w, c, _n) in enumerate(timing, 1):
+        for i, (a, b, _w, c, _n, _s) in enumerate(timing, 1):
             f.write('%d\n%s --> %s\n%s\n\n' % (i, srt_time(a), srt_time(b), c))
+    # The same, one caption per sentence: what a video should follow.
+    with open(os.path.join(out_dir, 'sentences.srt'), 'w', encoding='utf-8') as f:
+        cues = [s for row in timing for s in row[5]]
+        for i, s in enumerate(cues, 1):
+            f.write('%d\n%s --> %s\n%s\n\n' % (i, srt_time(s['start']), srt_time(s['end']), s['text']))
+    # Every line, sentence and word with its start and end in full.wav (seconds).
+    r3 = lambda v: round(v, 3)
+    with open(os.path.join(out_dir, 'timing.json'), 'w', encoding='utf-8') as f:
+        json.dump({'length': r3(len(full) / sr), 'lines': [
+            {'file': nm, 'who': w, 'text': c, 'start': r3(a), 'end': r3(b), 'sentences': [
+                {'text': s['text'], 'start': r3(s['start']), 'end': r3(s['end']), 'words': [
+                    {'word': wd['word'], 'start': r3(wd['start']), 'end': r3(wd['end'])} for wd in s['words']]}
+                for s in ss]}
+            for a, b, w, c, nm, ss in timing]}, f, ensure_ascii=False, indent=1)
     with open(os.path.join(out_dir, 'timing.txt'), 'w', encoding='utf-8') as f:
-        for a, b, w, c, _n in timing:
+        for a, b, w, c, _n, _s in timing:
             f.write('%6.2fs - %6.2fs  %-4s %s\n' % (a, b, w, c))
     print('\n%d lines, %.1f s -> %s' % (len(timing), len(full) / sr, out_dir))
     print('Remember the credit in the video: VOICEVOX:ずんだもん')
